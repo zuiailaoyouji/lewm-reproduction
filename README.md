@@ -1,184 +1,197 @@
+# LeWM 复现与分析
 
-# LeWorldModel
-### Stable End-to-End Joint-Embedding Predictive Architecture from Pixels
+本仓库记录对 **LeWorldModel（LeWM）** 的复现、实验与分析，重点关注基于 JEPA 的动作条件潜在动力学建模，以及利用 CEM / MPC 进行机器人任务规划。
 
-[Lucas Maes*](https://x.com/lucasmaes_), [Quentin Le Lidec*](https://quentinll.github.io/), [Damien Scieur](https://scholar.google.com/citations?user=hNscQzgAAAAJ&hl=fr), [Yann LeCun](https://yann.lecun.com/) and [Randall Balestriero](https://randallbalestriero.github.io/)
+本仓库基于 LeWM 官方实现：
 
-**Abstract:** Joint Embedding Predictive Architectures (JEPAs) offer a compelling framework for learning world models in compact latent spaces, yet existing methods remain fragile, relying on complex multi-term losses, exponential moving averages, pretrained encoders, or auxiliary supervision to avoid representation collapse. In this work, we introduce LeWorldModel (LeWM), the first JEPA that trains stably end-to-end from raw pixels using only two loss terms: a next-embedding prediction loss and a regularizer enforcing Gaussian-distributed latent embeddings. This reduces tunable loss hyperparameters from six to one compared to the only existing end-to-end alternative. With ~15M parameters trainable on a single GPU in a few hours, LeWM plans up to 48× faster than foundation-model-based world models while remaining competitive across diverse 2D and 3D control tasks. Beyond control, we show that LeWM's latent space encodes meaningful physical structure through probing of physical quantities. Surprise evaluation confirms that the model reliably detects physically implausible events.
+https://github.com/lucas-maes/le-wm
 
-<p align="center">
-   <b>[ <a href="https://arxiv.org/pdf/2603.19312v1">Paper</a> | <a href="https://huggingface.co/collections/quentinll/lewm">Checkpoints &amp; Data</a> | <a href="https://le-wm.github.io/">Website</a> ]</b>
-</p>
+原始模型设计与代码版权归 LeWM 作者所有。本仓库中我的工作主要包括训练与评估流程复现、模型结构分析、规划流程分析，以及额外的小规模实验。
 
-<br>
+## 我完成的工作
 
-<p align="center">
-  <img src="assets/lewm.gif" width="80%">
-</p>
+- 复现了 LeWM 在 Push-T 任务上的训练流程；
+- 使用单张 NVIDIA A100 40GB 从头训练 Push-T LeWM 模型至第 12 个 epoch；
+- 成功加载自己训练得到的 epoch-12 checkpoint，并使用原始 CEM / MPC 流程进行规划评估；
+- 在一次 3 个 episode 的小规模 Push-T 测试中，3 个 episode 均成功完成；
+- 阅读并分析了 LeWM 的视觉编码器、动作条件预测器、SIGReg、latent rollout 与 CEM / MPC 规划流程；
+- 运行并学习了 LeWM 在 Two-Room 导航和 OGBench Cube manipulation 上的预训练模型推理与规划流程；
+- 探索将 JEPA-based World Model 应用于真实草莓采摘机器人的可行性。
 
-If you find this code useful, please reference it in your paper:
-```
-@article{maes_lelidec2026lewm,
-  title={LeWorldModel: Stable End-to-End Joint-Embedding Predictive Architecture from Pixels},
-  author={Maes, Lucas and Le Lidec, Quentin and Scieur, Damien and LeCun, Yann and Balestriero, Randall},
-  journal={arXiv preprint},
-  year={2026}
-}
-```
+## 仓库结构
 
-## Using the code
-This codebase builds on [stable-worldmodel](https://github.com/galilai-group/stable-worldmodel) for environment management, planning, and evaluation, and [stable-pretraining](https://github.com/galilai-group/stable-pretraining) for training. Together they reduce this repository to its core contribution: the model architecture and training objective.
-
-**Installation:**
-```bash
-uv venv --python=3.10
-source .venv/bin/activate
-uv pip install stable-worldmodel[train,env]
+```text
+.
+├── config/                  # LeWM 原始配置文件
+├── results/
+│   └── pusht/               # Push-T 实验结果
+├── README.md                # 模型与实验分析笔记
+├── scripts/                 # 复现与评估脚本
+├── train.py
+├── eval.py
+├── jepa.py
+├── module.py
+└── README_UPSTREAM.md       # LeWM 官方原始 README
 ```
 
-## Data
+数据集和模型 checkpoint 体积较大，因此不会上传到本仓库。
 
-Datasets use the HDF5 format for fast loading. Download the data from [HuggingFace](https://huggingface.co/collections/quentinll/lewm) and decompress with:
+## Push-T 复现
 
-```bash
-tar --zstd -xvf archive.tar.zst
-```
+### 训练配置
 
-Place the extracted `.h5` files under `$STABLEWM_HOME` (defaults to `~/.stable-wm/`). You can override this path:
-```bash
-export STABLEWM_HOME=/path/to/your/storage
-```
+| 项目 | 配置 |
+|---|---|
+| 视觉编码器 | ViT-Tiny |
+| 输入图像尺寸 | 224 × 224 |
+| Hidden Dimension | 192 |
+| Transformer 层数 | 12 |
+| Attention Heads | 3 |
+| Patch Size | 14 |
+| History Size | 3 |
+| Action Dimension | 2 |
+| Frameskip | 5 |
+| 计划训练轮数 | 100 epochs |
+| 实际完成训练 | 12 epochs |
+| GPU | NVIDIA A100 40GB |
 
-Dataset names are specified without the `.h5` extension. For example, `config/train/data/pusht.yaml` references `pusht_expert_train`, which resolves to `$STABLEWM_HOME/pusht_expert_train.h5`.
+原计划按照官方设置训练 100 epochs，但该次训练任务在第 12 个 epoch 后因远程任务中断而停止。
 
-## Training
+因此，本仓库只是将保存下来的 early-stage checkpoint 用于分析：
 
-`jepa.py` contains the PyTorch implementation of LeWM. Training is configured via [Hydra](https://hydra.cc/) config files under `config/train/`.
+> 在训练早期，LeWM 学到的 latent dynamics 是否已经足以支持基于 CEM / MPC 的规划。
 
-Before training, set your WandB `entity` and `project` in `config/train/lewm.yaml`:
-```yaml
-wandb:
-  config:
-    entity: your_entity
-    project: your_project
-```
+## Epoch-12 Push-T 评估
 
-To launch training:
-```bash
-python train.py data=pusht
-```
+使用自己训练得到的 epoch-12 checkpoint，通过 LeWM 官方的 CEM / MPC evaluation pipeline 进行测试。
 
-Checkpoints are saved to `$STABLEWM_HOME` upon completion.
-
-For baseline scripts, see the stable-worldmodel [scripts](https://github.com/galilai-group/stable-worldmodel/tree/main/scripts/train) folder.
-
-## Planning
-
-Evaluation configs live under `config/eval/`. Set the `policy` field to the checkpoint path **relative to `$STABLEWM_HOME`**, without the `_object.ckpt` suffix:
+示例命令：
 
 ```bash
-# ✓ correct
-python eval.py --config-name=pusht.yaml policy=pusht/lewm
-
-# ✗ incorrect
-python eval.py --config-name=pusht.yaml policy=pusht/lewm_object.ckpt
+python eval.py \
+  --config-name=pusht.yaml \
+  policy=pusht_full_001/weights_epoch_12.pt \
+  eval.num_eval=3
 ```
 
-## Pretrained Checkpoints
+测试结果：
 
-Pretrained LeWM checkpoints for each environment are mirrored on the Hugging Face
-Hub (model repos), alongside the datasets (dataset repos) in the same collection:
+| Checkpoint | 测试 Episode 数 | 成功 Episode 数 |
+|---|---:|---:|
+| Epoch 12 | 3 | 3 |
 
-- [`quentinll/lewm-pusht`](https://huggingface.co/quentinll/lewm-pusht)
-- [`quentinll/lewm-cube`](https://huggingface.co/quentinll/lewm-cube)
-- [`quentinll/lewm-tworooms`](https://huggingface.co/quentinll/lewm-tworooms)
-- [`quentinll/lewm-reacher`](https://huggingface.co/quentinll/lewm-reacher)
+在本次随机抽取的 3 个 Push-T evaluation episode 中，epoch-12 checkpoint 均成功完成任务。
 
-The full baseline checkpoint suite (PLDM, LeJEPA, IVL, IQL, GCBC, DINO-WM, DINO-WM-noprop)
-is available on [Google Drive](https://drive.google.com/drive/folders/1r31os0d4-rR0mdHc7OlY_e5nh3XT4r4e):
+更大规模的评估以及不同 checkpoint 间的对比实验记录在：
 
-<div align="center">
-
-| Method | two-room | pusht | cube | reacher |
-|:---:|:---:|:---:|:---:|:---:|
-| pldm | ✓ | ✓ | ✓ | ✓ |
-| lejepa | ✓ | ✓ | ✓ | ✓ |
-| ivl | ✓ | ✓ | ✓ | — |
-| iql | ✓ | ✓ | ✓ | — |
-| gcbc | ✓ | ✓ | ✓ | — |
-| dinowm | ✓ | ✓ | — | — |
-| dinowm_noprop | ✓ | ✓ | ✓ | ✓ |
-
-</div>
-
-## Loading a checkpoint
-
-### From the Drive archive
-
-Each tar archive contains two files per checkpoint:
-- `<name>_object.ckpt` — a serialized Python object for convenient loading; this is what `eval.py` and the `stable_worldmodel` API use
-- `<name>_weight.ckpt` — a weights-only checkpoint (`state_dict`) for cases where you want to load weights into your own model instance
-
-Place the extracted files under `$STABLEWM_HOME/` and load via:
-
-```python
-import stable_worldmodel as swm
-
-# Load the cost model (for MPC)
-cost = swm.policy.AutoCostModel('pusht/lewm')
+```text
+results/pusht/
 ```
 
-`AutoCostModel` accepts:
-- `run_name` — checkpoint path **relative to `$STABLEWM_HOME`**, without the `_object.ckpt` suffix
-- `cache_dir` — optional override for the checkpoint root (defaults to `$STABLEWM_HOME`)
+## LeWM 模型理解
 
-The returned module is in `eval` mode with its PyTorch weights accessible via `.state_dict()`.
+LeWM 的整体流程可以概括为：
 
-### From the Hugging Face mirror
-
-The HF model repos ship the LeWM checkpoint as a `weights.pt` (state dict) plus a
-`config.json` describing the model. Convert once to produce the `_object.ckpt`
-that `eval.py` expects:
-
-```bash
-# download weights.pt + config.json
-hf download quentinll/lewm-pusht --local-dir $STABLEWM_HOME/hf_pusht
-
-# convert to object checkpoint under $STABLEWM_HOME/pusht/lewm_object.ckpt
-python - <<'PY'
-import json, torch, stable_pretraining as spt
-from pathlib import Path
-from jepa import JEPA
-from module import ARPredictor, Embedder, MLP
-import stable_worldmodel as swm
-
-src = Path(swm.data.utils.get_cache_dir(), "hf_pusht")
-out = Path(swm.data.utils.get_cache_dir(), "pusht", "lewm_object.ckpt")
-
-cfg = json.loads((src / "config.json").read_text())
-encoder = spt.backbone.utils.vit_hf(
-    cfg["encoder"]["size"],
-    patch_size=cfg["encoder"]["patch_size"],
-    image_size=cfg["encoder"]["image_size"],
-    pretrained=False, use_mask_token=False,
-)
-mlp = lambda k: MLP(input_dim=cfg[k]["input_dim"], output_dim=cfg[k]["output_dim"],
-                    hidden_dim=cfg[k]["hidden_dim"], norm_fn=torch.nn.BatchNorm1d)
-model = JEPA(
-    encoder=encoder,
-    predictor=ARPredictor(**cfg["predictor"]),
-    action_encoder=Embedder(**cfg["action_encoder"]),
-    projector=mlp("projector"),
-    pred_proj=mlp("pred_proj"),
-)
-sd = torch.load(src / "weights.pt", map_location="cpu", weights_only=False)
-model.load_state_dict(sd, strict=True)
-out.parent.mkdir(parents=True, exist_ok=True)
-torch.save(model, out)
-PY
+```text
+视觉观测
+   ↓
+Encoder
+   ↓
+Latent Representation
+   ↓
+Action-Conditioned Predictor
+   ↓
+未来 Latent State
+   ↓
+规划目标计算
+   ↓
+CEM
+   ↓
+MPC
+   ↓
+执行动作
 ```
 
-After conversion, load via `swm.policy.AutoCostModel('pusht/lewm')` as usual.
+与直接预测未来像素不同，LeWM 主要在 latent space 中预测未来表示。
 
-## Contact & Contributions
-Feel free to open [issues](https://github.com/lucas-maes/le-wm/issues)! For questions or collaborations, please contact `lucas.maes@mila.quebec`
+训练过程中主要包含两部分目标：
+
+1. **未来 latent prediction loss**
+2. **SIGReg regularization**
+
+其中，SIGReg 用于约束 latent representation 的统计分布，降低 representation collapse 的风险。
+
+## CEM / MPC 规划流程
+
+LeWM 本身负责：
+
+> 给定当前视觉观测和动作序列，预测未来 latent trajectory。
+
+模型并不会直接输出最优动作。
+
+规划器使用 CEM 对候选动作序列进行搜索：
+
+```text
+采样多组候选动作序列
+        ↓
+LeWM rollout
+        ↓
+预测未来 latent trajectory
+        ↓
+计算 planning cost
+        ↓
+选择 elite action sequences
+        ↓
+更新动作分布
+        ↓
+重复优化
+```
+
+得到较优动作序列之后，MPC 采用 receding-horizon 的方式执行动作：
+
+```text
+规划
+ ↓
+执行部分动作
+ ↓
+重新获取视觉观测
+ ↓
+重新规划
+```
+
+因此可以将二者理解为：
+
+- **LeWM：负责预测**
+- **CEM：负责搜索**
+- **MPC：负责闭环执行与重规划**
+
+## SIGReg
+
+LeWM 中使用 SIGReg 对 latent representation 进行正则化。
+
+其基本思想是：
+
+1. 将高维 latent 随机投影到大量一维方向；
+2. 计算这些一维投影的经验特征函数；
+3. 将其与标准高斯分布的特征函数进行比较；
+4. 对多个投影方向与多个采样点上的误差进行统计。
+
+通过这种方式，使 latent distribution 接近各向同性高斯分布。
+
+如果 representation 完全 collapse 到某个常数，其一维投影显然无法满足标准高斯分布，因此 SIGReg 可以对 collapse 产生较强惩罚。
+
+## Acknowledgement
+
+本仓库基于 Lucas Maes 等人发布的 LeWorldModel 官方实现。
+
+官方仓库：
+
+https://github.com/lucas-maes/le-wm
+
+LeWM 的模型设计、官方实现、预训练模型以及 benchmark 结果请以官方项目为准。
+
+## License
+
+LeWM 官方代码使用 MIT License。
+
+本仓库保留原始版权声明与 LICENSE 文件。
