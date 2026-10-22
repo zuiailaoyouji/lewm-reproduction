@@ -12,8 +12,9 @@ https://github.com/lucas-maes/le-wm
 
 - 复现了 LeWM 在 Push-T 任务上的训练流程；
 - 使用单张 NVIDIA A100 40GB 从头训练 Push-T LeWM 模型至第 12 个 epoch；
-- 成功加载自己训练得到的 epoch-12 checkpoint，并使用原始 CEM / MPC 流程进行规划评估；
-- 在一次 3 个 episode 的小规模 Push-T 测试中，3 个 episode 均成功完成；
+- 成功加载自己训练得到的 checkpoint，并使用原始 CEM / MPC 流程进行规划评估；
+- 完成 Random Policy 与 LeWM + CEM/MPC 的对照实验；
+- 对 epoch 1 / 3 / 6 / 12 checkpoint 进行了 Training Progress vs. Planning Ability 对比；
 - 阅读并分析了 LeWM 的视觉编码器、动作条件预测器、SIGReg、latent rollout 与 CEM / MPC 规划流程；
 - 运行并学习了 LeWM 在 Two-Room 导航和 OGBench Cube manipulation 上的预训练模型推理与规划流程；
 - 探索将 JEPA-based World Model 应用于真实草莓采摘机器人的可行性。
@@ -22,16 +23,19 @@ https://github.com/lucas-maes/le-wm
 
 ```text
 .
-├── config/                  # LeWM 原始配置文件
+├── config/
 ├── results/
-│   └── pusht/               # Push-T 实验结果
-├── README.md                # 模型与实验分析笔记
-├── scripts/                 # 复现与评估脚本
+│   └── pusht/
+│       ├── experiment_summary.md
+│       ├── *_eval_*.txt
+│       └── env_0.mp4
+├── scripts/
 ├── train.py
 ├── eval.py
 ├── jepa.py
 ├── module.py
-└── README_UPSTREAM.md       # LeWM 官方原始 README
+├── README.md
+└── README_UPSTREAM.md
 ```
 
 数据集和模型 checkpoint 体积较大，因此不会上传到本仓库。
@@ -65,28 +69,16 @@ https://github.com/lucas-maes/le-wm
 
 使用自己训练得到的 epoch-12 checkpoint，通过 LeWM 官方的 CEM / MPC evaluation pipeline 进行测试。
 
-示例命令：
+目前完成的 Push-T 小规模实验主要包括：
 
-```bash
-python eval.py \
-  --config-name=pusht.yaml \
-  policy=pusht_full_001/weights_epoch_12.pt \
-  eval.num_eval=3
-```
+1. **Random Policy vs. LeWM + CEM/MPC**：验证 learned latent dynamics 是否能够为 goal-directed planning 提供有效信息；
+2. **Training Progress vs. Planning Ability**：比较 epoch 1 / 3 / 6 / 12 checkpoint 的下游规划能力变化。
 
-测试结果：
+具体实验设置、评估结果、结果分析、可视化示例、局限性与后续实验方向统一记录在：
 
-| Checkpoint | 测试 Episode 数 | 成功 Episode 数 |
-|---|---:|---:|
-| Epoch 12 | 3 | 3 |
+**[查看完整 Push-T 实验总结 →](./results/pusht/experiment_summary.md)**
 
-在本次随机抽取的 3 个 Push-T evaluation episode 中，epoch-12 checkpoint 均成功完成任务。
-
-更大规模的评估以及不同 checkpoint 间的对比实验记录在：
-
-```text
-results/pusht/
-```
+原始 evaluation logs 与评估视频也保存在 [`results/pusht/`](./results/pusht/) 目录中。
 
 ## LeWM 模型理解
 
